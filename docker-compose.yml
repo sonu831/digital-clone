@@ -1,0 +1,206 @@
+# ══════════════════════════════════════════════════════════════════════════════
+#  DIGITAL CLONE — Unified Stack
+# ──────────────────────────────────────────────────────────────────────────────
+#  Services:
+#    postgres     (REQUIRED)  state store for n8n + your activity_logs
+#    ollama       (REQUIRED)  local LLM inference engine — "the brain"
+#    ollama-init  (optional)  one-shot model puller; exits after warming models
+#    n8n          (REQUIRED)  orchestration engine — "the nervous system"
+#    open-webui   (optional)  browser playground for Ollama
+#
+#  HOW TO TRIM THE STACK:
+#    Don't want a service? Comment out its entire block below AND any line that
+#    references it under `depends_on:`. Each optional block is fenced with
+#    `# >>> OPTIONAL` / `# <<< OPTIONAL` markers so it's safe to delete cleanly.
+#
+#  ALL configuration is read from .env (copy .env.example -> .env first).
+#  No secrets are hardcoded here. `${VAR:?msg}` fails fast if a REQUIRED var is unset.
+# ══════════════════════════════════════════════════════════════════════════════
+
+# A single private bridge network. Services reach each other by service name
+# (e.g. n8n calls Ollama at http://ollama:11434). Nothing is exposed to the
+# host except the explicit `ports:` mappings below.
+networks:
+  digital_clone_net:
+    driver: bridge
+
+# Named volumes keep runtime state out of the repo and survive `docker compose down`.
+volumes:
+  postgres_data:
+  ollama_data:
+  n8n_data:
+  open_webui_data:
+
+services:
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # POSTGRES — state for n8n + your custom activity_logs table
+  # ════════════════════════════════════════════════════════════════════════════
+  postgres:
+    image: postgres:16-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      # Any *.sql / *.sh here runs ONCE, in order, on first init of an empty DB.
+      - ./db/init:/docker-entrypoint-initdb.d:ro
+    ports:
+      # Exposed for local DB tooling. In production, delete this mapping so the
+      # DB is reachable ONLY from inside digital_clone_net.
+      - "${POSTGRES_PORT:-5432}:5432"
+    networks:
+      - digital_clone_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # OLLAMA — local inference engine. Internal URL: http://ollama:11434
+  # ════════════════════════════════════════════════════════════════════════════
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_KEEP_ALIVE: ${OLLAMA_KEEP_ALIVE:-15m}
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "${OLLAMA_PORT:-11434}:11434"
+    networks:
+      - digital_clone_net
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    # >>> OPTIONAL: GPU ACCELERATION ───────────────────────────────────────────
+    # Requires NVIDIA drivers + NVIDIA Container Toolkit on the host.
+    # Set ENABLE_GPU=true in .env (documentation flag) AND uncomment this block.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+    # <<< OPTIONAL: GPU ACCELERATION ───────────────────────────────────────────
+
+  # >>> OPTIONAL: ollama-init ────────────────────────────────────────────────────
+  # One-shot helper that pulls OLLAMA_MODELS then exits (state=Exited(0)).
+  # Removes the manual "docker exec ... ollama pull" step on first boot.
+  # Delete this whole block if you prefer to pull models manually.
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+      OLLAMA_MODELS: ${OLLAMA_MODELS:-llama3:8b}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        echo "Pulling models: $${OLLAMA_MODELS}";
+        for m in $$(echo "$${OLLAMA_MODELS}" | tr ',' ' '); do
+          echo ">> ollama pull $$m";
+          ollama pull "$$m" || exit 1;
+        done;
+        echo "All models pulled.";
+    networks:
+      - digital_clone_net
+    restart: "no"
+  # <<< OPTIONAL: ollama-init ────────────────────────────────────────────────────
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # N8N — workflow orchestration engine
+  # ════════════════════════════════════════════════════════════════════════════
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    # >>> To use the custom image in docker/n8n/Dockerfile (extra system deps,
+    #     fonts for PDF, etc.), comment out `image:` above and uncomment:
+    # build:
+    #   context: ./docker/n8n
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-n8n
+    restart: unless-stopped
+    environment:
+      # --- Database wiring (n8n stores its own state in Postgres) ---
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: ${POSTGRES_DB}
+      DB_POSTGRESDB_USER: ${POSTGRES_USER}
+      DB_POSTGRESDB_PASSWORD: ${POSTGRES_PASSWORD}
+      # --- Security & identity ---
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?set N8N_ENCRYPTION_KEY in .env}
+      N8N_BASIC_AUTH_ACTIVE: ${N8N_BASIC_AUTH_ACTIVE:-true}
+      N8N_BASIC_AUTH_USER: ${N8N_BASIC_AUTH_USER:-admin}
+      N8N_BASIC_AUTH_PASSWORD: ${N8N_BASIC_AUTH_PASSWORD:?set N8N_BASIC_AUTH_PASSWORD in .env}
+      N8N_SECURE_COOKIE: ${N8N_SECURE_COOKIE:-false}
+      # --- Public addressing (webhooks must resolve from the outside world) ---
+      N8N_HOST: ${N8N_HOST:-localhost}
+      N8N_PROTOCOL: ${N8N_PROTOCOL:-http}
+      N8N_PORT: 5678
+      WEBHOOK_URL: ${WEBHOOK_URL:-http://localhost:5678/}
+      GENERIC_TIMEZONE: ${GENERIC_TIMEZONE:-UTC}
+      TZ: ${TZ:-UTC}
+      # --- Convenience: expose Ollama URL + spoke creds to expressions/nodes ---
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_ROUTER_MODEL: ${OLLAMA_ROUTER_MODEL:-llama3:8b}
+      OLLAMA_ANALYST_MODEL: ${OLLAMA_ANALYST_MODEL:-deepseek-r1:8b}
+    volumes:
+      - n8n_data:/home/node/.n8n
+      # Read-only mount so workflow JSON in the repo can be imported from the UI
+      # (Import from File) or via `make import-workflows`.
+      - ./n8n/workflows:/workflows:ro
+    ports:
+      - "${N8N_PORT:-5678}:5678"
+    networks:
+      - digital_clone_net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:5678/healthz || exit 1"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+
+  # >>> OPTIONAL: OPEN WEBUI ────────────────────────────────────────────────────
+  # Browser UI to chat with / manage Ollama models and prototype system prompts.
+  # Not needed for the automated pipeline — comment out this whole block in prod.
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-open-webui
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      WEBUI_AUTH: "true"   # require login on the WebUI
+    volumes:
+      - open_webui_data:/app/backend/data
+    ports:
+      - "${OPEN_WEBUI_PORT:-8080}:8080"
+    networks:
+      - digital_clone_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+  # <<< OPTIONAL: OPEN WEBUI ────────────────────────────────────────────────────

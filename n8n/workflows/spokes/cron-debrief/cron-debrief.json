@@ -1,0 +1,314 @@
+{
+  "name": "cron-debrief",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 24
+            }
+          ],
+          "triggerAtHour": 18,
+          "triggerAtMinute": 0
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000001",
+      "name": "Schedule 18:00 Daily",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT id, created_at, source, event_type, actor, channel, user_query, ai_summary, status\nFROM clone.v_today\nORDER BY created_at ASC;"
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000002",
+      "name": "Get Today's Activity",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2,
+      "position": [500, 250],
+      "credentials": {
+        "postgres": {
+          "id": "DC_POSTGRES_CRED",
+          "name": "Digital Clone Postgres"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.BROKER_API_BASE_URL }}/v2/account",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "APCA-API-KEY-ID",
+              "value": "={{ $env.BROKER_API_KEY_ID }}"
+            },
+            {
+              "name": "APCA-API-SECRET-KEY",
+              "value": "={{ $env.BROKER_API_SECRET_KEY }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000003",
+      "name": "Fetch Broker Snapshot",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 450]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge today's activity logs + broker snapshot into a `data_snapshot` inbound-event.\n// The Hub routes data_snapshot → analyst model (deepseek-r1) for heavy reasoning.\n// Input: two parallel branches. $input.all() returns items from both in connection order:\n//   [0] = activity rows from Postgres   [1] = broker JSON from HTTP\n\nconst items = $input.all();\n\n// Gather activity data from the first branch (may have multiple rows)\nlet activityData = [];\nlet brokerSnapshot = {};\n\nfor (const item of items) {\n  const j = item.json;\n  // Broker response has a top-level 'id' or 'account_number' field\n  if (j.id && (j.account_number !== undefined || j.status !== undefined || j.currency !== undefined || j.buying_power !== undefined)) {\n    brokerSnapshot = j;\n  } else if (j.error && j.error.length > 0) {\n    brokerSnapshot = j;\n  }\n  // Otherwise treat as activity row (has source, event_type, etc.)\n  else if (j.source || j.event_type || j.created_at) {\n    activityData.push(j);\n  }\n}\n\n// Build the merged data payload\nconst dataPayload = {\n  activity_count: activityData.length,\n  activity: activityData,\n  broker_available: Object.keys(brokerSnapshot).length > 0,\n  broker_account: brokerSnapshot.error ? null : brokerSnapshot,\n  broker_error: brokerSnapshot.error || null\n};\n\nconst correlationId = crypto.randomUUID();\n\nreturn [{\n  json: {\n    schema_version: '1.0',\n    event_id: crypto.randomUUID(),\n    correlation_id: correlationId,\n    source: 'cron',\n    type: 'data_snapshot',\n    occurred_at: new Date().toISOString(),\n    text: 'Daily debrief: summarize today\\'s activity and portfolio state.',\n    data: dataPayload,\n    attachments: [],\n    metadata: {\n      trigger: 'scheduled',\n      report_date: new Date().toISOString().split('T')[0]\n    }\n  }\n}];"
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000004",
+      "name": "Build debrief event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [750, 350]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": "ai-hub",
+        "mode": "wait",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000005",
+      "name": "Call Hub",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 2,
+      "position": [1000, 350]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "alpha",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "gamma",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "deny",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000006",
+      "name": "Route by Path",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1250, 350]
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_DEBRIEF_CHANNEL }}",
+        "text": "={{ '*Daily Executive Debrief*\\n' + ($json.ai_reply_text || 'No summary generated.') }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000007",
+      "name": "Post Debrief to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1500, 250],
+      "credentials": {
+        "slackApi": {
+          "id": "DC_SLACK_CRED",
+          "name": "Digital Clone Slack"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "channel": "={{ $env.SLACK_DEBRIEF_CHANNEL }}",
+        "text": "={{ '⚠️ *Debrief Issue*\\n' + ($json.ai_guardrail_message || 'The daily debrief encountered a problem.') }}",
+        "otherOptions": {
+          "mrkdwn": true
+        }
+      },
+      "id": "c3d4e5f6-3000-4000-c000-000000000008",
+      "name": "Post Denial to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2,
+      "position": [1500, 450],
+      "credentials": {
+        "slackApi": {
+          "id": "DC_SLACK_CRED",
+          "name": "Digital Clone Slack"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Schedule 18:00 Daily": {
+      "main": [
+        [
+          {
+            "node": "Get Today's Activity",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Broker Snapshot",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Today's Activity": {
+      "main": [
+        [
+          {
+            "node": "Build debrief event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Broker Snapshot": {
+      "main": [
+        [
+          {
+            "node": "Build debrief event",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Build debrief event": {
+      "main": [
+        [
+          {
+            "node": "Call Hub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Hub": {
+      "main": [
+        [
+          {
+            "node": "Route by Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Path": {
+      "main": [
+        [
+          {
+            "node": "Post Debrief to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Debrief to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Post Denial to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "={{ $env.GENERIC_TIMEZONE }}",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0"
+}

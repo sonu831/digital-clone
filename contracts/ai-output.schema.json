@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/sonu831/digital-clone/contracts/ai-output.schema.json",
+  "title": "DigitalClone AI Output",
+  "description": "The single normalized payload the AI Hub MUST emit before any OUTPUT/action spoke runs. Action spokes (post to Slack, write to DB, call an API) translate this neutral shape INTO provider-specific calls. This decouples the model's decision from the delivery mechanism.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "correlation_id", "path", "summary"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0"
+    },
+    "correlation_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "MUST equal the inbound event's correlation_id."
+    },
+    "path": {
+      "type": "string",
+      "enum": ["alpha", "beta", "gamma", "deny"],
+      "description": "Routing decision. alpha=informational reply, beta=create task/log, gamma=fetch+summarize, deny=guardrail refusal."
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short human-readable description of what the Hub decided/did. Stored in activity_logs.ai_summary."
+    },
+    "reply": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "description": "Optional message to send back to the originating channel.",
+      "properties": {
+        "text": { "type": "string" },
+        "format": {
+          "type": "string",
+          "enum": ["plain", "markdown", "blocks"],
+          "default": "markdown"
+        }
+      },
+      "required": ["text"]
+    },
+    "actions": {
+      "type": "array",
+      "description": "Zero or more neutral actions for output spokes to execute, in order.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["tool", "params"],
+        "properties": {
+          "tool": {
+            "type": "string",
+            "description": "Neutral tool name resolved by the action router.",
+            "examples": ["db.log_event", "task.create", "notify.channel", "http.fetch"]
+          },
+          "params": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "Tool-specific arguments. Validated by the spoke that owns the tool."
+          }
+        }
+      }
+    },
+    "guardrail": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Populated when path='deny' or a safety rule fired.",
+      "properties": {
+        "triggered": { "type": "boolean" },
+        "rule": { "type": "string", "examples": ["read_only_limitation", "missing_data"] },
+        "message": { "type": "string" }
+      }
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Model's self-reported confidence in the routing decision."
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "Model name, token usage, latency, etc. for observability."
+    }
+  }
+}

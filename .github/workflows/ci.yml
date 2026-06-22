@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  validate:
+    name: Validate stack & contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Compose is syntactically valid and resolves with example values ──────
+      - name: Validate docker-compose
+        run: |
+          cp .env.example .env
+          docker compose config -q
+          echo "✓ docker-compose.yml is valid"
+
+      # ── All JSON (contracts + exported workflows) parses ─────────────────────
+      - name: Validate JSON files
+        run: |
+          set -e
+          shopt -s globstar nullglob
+          files=(contracts/**/*.json n8n/workflows/**/*.json)
+          if [ ${#files[@]} -eq 0 ]; then echo "No JSON files found."; exit 0; fi
+          for f in "${files[@]}"; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1]))" "$f" \
+              && echo "✓ $f" || { echo "✗ $f invalid JSON"; exit 1; }
+          done
+
+      # ── JSON Schemas themselves are valid draft 2020-12 ──────────────────────
+      - name: Validate JSON Schemas
+        run: |
+          npm install -g ajv-cli ajv-formats
+          for s in contracts/*.schema.json; do
+            ajv compile -s "$s" --spec=draft2020 -c ajv-formats \
+              && echo "✓ schema $s compiles" || exit 1
+          done
+
+      # ── Guardrails: no secrets or runtime state committed ────────────────────
+      - name: Secret & state guardrails
+        run: |
+          fail=0
+          if git ls-files | grep -E '^\.env$'; then echo "✗ .env must not be committed"; fail=1; fi
+          if git ls-files | grep -E '^n8n/credentials/.*\.json$'; then echo "✗ credentials committed"; fail=1; fi
+          if git ls-files | grep -E '(_data/|/postgres_data/|/ollama_data/)'; then echo "✗ data volume committed"; fail=1; fi
+          [ "$fail" -eq 0 ] && echo "✓ no secrets/state committed"
+          exit $fail
