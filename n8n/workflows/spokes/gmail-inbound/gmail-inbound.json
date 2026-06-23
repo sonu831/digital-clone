@@ -1,0 +1,56 @@
+{
+  "id": "gmail-inbound",
+  "name": "gmail-inbound",
+  "nodes": [
+    {
+      "parameters": { "rule": { "interval": [{"field":"minutes","minutesInterval":5}] } },
+      "id": "gm-001", "name": "Poll 5 Min", "type": "n8n-nodes-base.scheduleTrigger", "typeVersion": 1, "position": [250,300]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "getAll", "options": { "q": "is:unread -label:DC_Processed -category:promotions -category:social -category:updates -category:forums", "maxResults": 3 }, "returnAll": false, "limit": 3 },
+      "id": "gm-002", "name": "Fetch Unread", "type": "n8n-nodes-base.gmail", "typeVersion": 2, "position": [500,300]
+    },
+    {
+      "parameters": {
+        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let msg=it.json,from='',sub='',email='',name='';\n if(msg.from||msg.From){from=msg.from||msg.From||''}\n if(msg.subject||msg.Subject){sub=msg.subject||msg.Subject||''}\n if(!from&&msg.payload&&msg.payload.headers){\n  let h=msg.payload.headers;\n  if(Array.isArray(h)){\n   let f=h.find(x=>x&&x.name==='From'),s=h.find(x=>x&&x.name==='Subject');\n   from=f?f.value||'':'';sub=sub||(s?s.value||'':'');\n  }else{from=h.from||h.From||'';sub=sub||h.subject||h.Subject||''}\n }\n if(!from){r.push({json:{_skip:true}});continue}\n let m=from.match(/<?([^>]+)>?/);email=m?m[1].trim():from.trim();\n let nm=from.match(/^([^<]*)/);name=(nm&&nm[1])?nm[1].trim().replace(/\"/g,''):from.split('<')[0].trim().replace(/\"/g,'');\n if(!name)name=email;\n let body=msg.snippet||'';if(!sub)sub='(no subject)';\n let prompt='You are Digital Clone. Classify this email:\\nFrom: '+name+' ('+email+')\\nSubject: '+sub+'\\n'+body.substring(0,600)+'\\n\\nIf this needs MY personal reply, say NEEDS_REPLY and draft a reply under 300 chars. If it is just informational/no action needed, say INFO_ONLY.';\n r.push({json:{_prompt:prompt,_name:name,_email:email,_sub:sub,_snippet:body.substring(0,120),_mid:msg.id||'',_tid:msg.threadId||''}})\n}\nreturn r",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "gm-003", "name": "Build Prompt", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [700,300]
+    },
+    {
+      "parameters": { "jsCode": "let items=$input.all(),r=[];for(let i of items){if(!i.json._skip)r.push(i)}return r", "mode": "runOnceForAllItems" },
+      "id": "gm-007", "name": "Skip Empty", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [850,300]
+    },
+    {
+      "parameters": {
+        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let d=it.json,url='http://ollama:11434/api/generate',body=JSON.stringify({model:'llama3:8b',prompt:d._prompt,stream:false});\n try{\n  let resp=await this.helpers.httpRequest({method:'POST',url,body,headers:{'Content-Type':'application/json'},timeout:120000});\n  let reply=String(resp.response||'').trim().substring(0,1500)||'Got it!';\n  // Skip if AI says INFO_ONLY - just mark done silently\n  if(reply.includes('INFO_ONLY')){r.push({json:{_mid:d._mid}});continue}\n  let tg='📧 *'+d._name+'*\\n'+d._sub+'\\n\\n'+d._snippet+'\\n\\n🤖: '+reply;\n  let wa='📧 '+d._name+'\\n'+d._sub+'\\n\\n'+d._snippet+'\\n\\n🤖: '+reply;\n  r.push({json:{_tg:tg,_wa:wa,_reply:reply,_email:d._email,_sub:d._sub,_mid:d._mid,_tid:d._tid}})\n }catch(e){r.push({json:{_mid:d._mid}})}\n}\nreturn r",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "gm-004", "name": "AI+Parse", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1050,300]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "sendMessage", "chatId": "718322381", "text": "={{ $json._tg }}", "additionalFields": {} },
+      "id": "gm-010", "name": "Notify TG", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1250,200],
+      "credentials": { "telegramApi": { "id": "dc-telegram-cred-001", "name": "Digital Clone Telegram" } }
+    },
+    {
+      "parameters": { "resource": "sms", "operation": "send", "from": "whatsapp:+14155238886", "to": "whatsapp:+919026867140", "message": "={{ $json._wa }}" },
+      "id": "gm-011", "name": "Notify WA", "type": "n8n-nodes-base.twilio", "typeVersion": 1, "position": [1250,400]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "modify", "messageId": "={{ $json._mid }}", "addLabelIds": ["DC_Processed"], "removeLabelIds": ["UNREAD"] },
+      "id": "gm-008b", "name": "Mark Done", "type": "n8n-nodes-base.gmail", "typeVersion": 2, "position": [1500,300]
+    }
+  ],
+  "connections": {
+    "Poll 5 Min": {"main":[[{"node":"Fetch Unread","type":"main","index":0}]]},
+    "Fetch Unread": {"main":[[{"node":"Build Prompt","type":"main","index":0}]]},
+    "Build Prompt": {"main":[[{"node":"Skip Empty","type":"main","index":0}]]},
+    "Skip Empty": {"main":[[{"node":"AI+Parse","type":"main","index":0}]]},
+    "AI+Parse": {"main":[[{"node":"Notify TG","type":"main","index":0},{"node":"Notify WA","type":"main","index":0}]]},
+    "Notify TG": {"main":[[{"node":"Mark Done","type":"main","index":0}]]},
+    "Notify WA": {"main":[[{"node":"Mark Done","type":"main","index":0}]]}
+  },
+  "settings": { "timezone": "Asia/Kolkata", "saveManualExecutions": true },
+  "staticData": null, "pinData": {}, "versionId": "3.5.0"
+}

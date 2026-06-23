@@ -1,4 +1,5 @@
 {
+  "id": "ai-hub",
   "name": "ai-hub",
   "nodes": [
     {
@@ -11,307 +12,96 @@
     },
     {
       "parameters": {
-        "jsCode": "// Validate that the inbound payload has all required fields per contracts/inbound-event.schema.json\nconst required = ['schema_version', 'event_id', 'correlation_id', 'source', 'type', 'occurred_at'];\n\nfor (const item of $input.all()) {\n  const ev = item.json;\n  const missing = required.filter(f => !ev[f]);\n  if (missing.length > 0) {\n    throw new Error(`Inbound event validation FAILED. Missing fields: ${missing.join(', ')}. Received: ${JSON.stringify(Object.keys(ev))}`);\n  }\n  if (!['message', 'command', 'scheduled', 'data_snapshot'].includes(ev.type)) {\n    throw new Error(`Inbound event validation FAILED. Unknown type: \"${ev.type}\". Must be one of: message, command, scheduled, data_snapshot.`);\n  }\n}\n\n// Pass everything through unchanged\nreturn $input.all();"
+        "jsCode": "// Validate and build the system + user prompt for Ollama.\nconst results = [];\n\nfor (const item of $input.all()) {\n  const ev = item.json;\n\n  const required = ['schema_version', 'event_id', 'correlation_id', 'source', 'type', 'occurred_at'];\n  const missing = required.filter(f => !ev[f]);\n  if (missing.length > 0) {\n    throw new Error(`Missing fields: ${missing.join(', ')}`);\n  }\n\n  const systemPrompt = `You are Digital Clone, an AI assistant running on the owner's local hardware. Nothing leaves this machine.\n\nRules:\n1. You have ZERO authority to execute trades, move money, or take irreversible actions.\n2. Use ONLY provided data. Never invent facts.\n3. Be concise and direct.\n\nRouting paths (choose one based on the user's request):\n- \"alpha\": informational reply needed → draft a concise reply\n- \"beta\": task/follow-up to log → acknowledge\n- \"deny\": request violates a guardrail → refuse politely\n\nOutput ONLY valid JSON with this structure:\n{\"schema_version\":\"1.0\",\"correlation_id\":\"CORR_ID\",\"path\":\"alpha|beta|deny\",\"summary\":\"one-line summary\",\"reply\":{\"text\":\"reply message\",\"format\":\"plain\"},\"confidence\":0.9}`;\n\n  const userPrompt = `User message from ${ev.source}: \"${(ev.text || '').substring(0, 2000)}\"\nSender: ${ev.actor ? ev.actor.display_name : 'unknown'} (${ev.source})\nCorrelation ID: ${ev.correlation_id}\nType: ${ev.type}\n\nDetermine the routing path and generate the JSON response.`;\n\n  results.push({\n    json: {\n      ...ev,\n      _system_prompt: systemPrompt,\n      _user_prompt: userPrompt\n    }\n  });\n}\n\nreturn results;"
       },
       "id": "a1b2c3d4-1000-4000-a000-000000000002",
-      "name": "Validate Event",
+      "name": "Build Prompt",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
       "position": [500, 300]
     },
     {
       "parameters": {
-        "rules": {
-          "values": [
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "authentication": "none",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
             {
-              "conditions": {
-                "options": {
-                  "caseSensitive": false,
-                  "leftValue": "",
-                  "typeValidation": "strict"
-                },
-                "conditions": [
-                  {
-                    "leftValue": "={{ $json.type }}",
-                    "rightValue": "data_snapshot",
-                    "operator": {
-                      "type": "string",
-                      "operation": "equals"
-                    }
-                  }
-                ],
-                "combinator": "and"
-              }
+              "name": "model",
+              "value": "llama3:8b"
+            },
+            {
+              "name": "prompt",
+              "value": "={{ $json._system_prompt + '\\n\\n---\\n\\n' + $json._user_prompt }}"
+            },
+            {
+              "name": "stream",
+              "value": "false"
+            },
+            {
+              "name": "options.temperature",
+              "value": "0.1"
             }
           ]
         },
         "options": {
-          "fallbackOutput": "extra"
+          "timeout": 120000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
         }
       },
       "id": "a1b2c3d4-1000-4000-a000-000000000003",
-      "name": "Select Model",
-      "type": "n8n-nodes-base.switch",
-      "typeVersion": 3,
+      "name": "Call Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
       "position": [750, 300]
     },
     {
       "parameters": {
-        "promptType": "define",
-        "text": "Identity & Authority:\nYou are \"Digital Clone\", an autonomous, fully-local executive chief of staff to the owner. You process incoming professional communications and analyze READ-ONLY operational/financial data. You run on the owner's own hardware; nothing leaves it.\n\nOperational Guardrails (CRITICAL — non-negotiable):\n1. READ-ONLY LIMITATION: You have ZERO authority to execute trades, modify positions, move money, or take any irreversible external action. If asked to buy/sell/transfer, respond on path \"deny\" with guardrail.rule=\"read_only_limitation\" and the message: \"Operational bounds exceeded. Transaction denied.\"\n2. FACTUAL GROUNDING: Use ONLY data provided by your tools (Postgres logs, broker API payloads in the inbound event). Never invent a metric, task, timestamp, or amount. If required data is missing, set path=\"gamma\" or report the gap explicitly — do not guess.\n3. MATHEMATICAL VALIDATION: For any P&L/portfolio math, use the raw numbers from the payload. Report absolute change, percentage change, and trade counts exactly as received. Do not extrapolate or forecast.\n\nRouting (choose exactly one path):\n- alpha: needs an acknowledgment or informational reply. Draft a concise, professional reply in the owner's tone → fill `reply`.\n- beta:  implies an administrative task/follow-up → emit an action with tool \"task.create\" describing the objective.\n- gamma: requests a summary/state that requires data → emit \"http.fetch\" or rely on the snapshot, then summarize in `reply`.\n- deny:  violates a guardrail → set guardrail.triggered=true.\n\nOutput:\nReturn ONLY a JSON object conforming to the ai-output contract (schema_version \"1.0\"). Echo the inbound correlation_id. Keep `summary` to one line. In `reply.text` use markdown; bold key figures; bullet distinct metrics. Tone: analytical, direct, no corporate platitudes."
+        "jsCode": "// Parse Ollama response and build ai-output contract.\nconst results = [];\n\nfor (const item of $input.all()) {\n  const d = item.json;\n  let aiOutput;\n\n  // Ollama /api/generate returns { \"response\": \"...\" }\n  const rawResponse = d.response || d._ollama_response || '';\n\n  try {\n    // Try to extract JSON from the response\n    let jsonStr = String(rawResponse).trim();\n    const fenceMatch = jsonStr.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n    if (fenceMatch) jsonStr = fenceMatch[1].trim();\n    aiOutput = JSON.parse(jsonStr);\n  } catch (e) {\n    // Fallback: use the raw text as alpha reply\n    aiOutput = {\n      schema_version: \"1.0\",\n      correlation_id: d.correlation_id || '',\n      path: \"alpha\",\n      summary: \"AI response\",\n      reply: { text: rawResponse.substring(0, 1500), format: \"plain\" },\n      confidence: 0.7\n    };\n  }\n\n  aiOutput.correlation_id = d.correlation_id || aiOutput.correlation_id;\n  aiOutput.schema_version = \"1.0\";\n  if (!['alpha', 'beta', 'deny'].includes(aiOutput.path)) {\n    aiOutput.path = 'gamma';\n  }\n  aiOutput.summary = aiOutput.summary || 'Processed';\n  if (aiOutput.reply && !aiOutput.reply.format) aiOutput.reply.format = 'plain';\n  if (!aiOutput.actions) aiOutput.actions = [];\n  if (!aiOutput.guardrail) aiOutput.guardrail = { triggered: aiOutput.path === 'deny' };\n  if (!aiOutput.confidence) aiOutput.confidence = 0.8;\n\n  results.push({\n    json: {\n      event_id: d.event_id,\n      correlation_id: d.correlation_id,\n      source: d.source,\n      type: d.type,\n      occurred_at: d.occurred_at,\n      actor: d.actor,\n      channel: d.channel,\n      text: d.text,\n      data: d.data,\n      attachments: d.attachments,\n      metadata: d.metadata,\n      raw: d.raw,\n      ai_path: aiOutput.path,\n      ai_summary: aiOutput.summary,\n      ai_reply_text: aiOutput.reply ? aiOutput.reply.text : null,\n      ai_reply_format: aiOutput.reply ? (aiOutput.reply.format || 'plain') : null,\n      ai_actions: aiOutput.actions,\n      ai_guardrail_triggered: aiOutput.guardrail ? aiOutput.guardrail.triggered : false,\n      ai_guardrail_rule: aiOutput.guardrail ? (aiOutput.guardrail.rule || null) : null,\n      ai_guardrail_message: aiOutput.guardrail ? (aiOutput.guardrail.message || null) : null,\n      ai_confidence: aiOutput.confidence\n    }\n  });\n}\n\nreturn results;"
       },
       "id": "a1b2c3d4-1000-4000-a000-000000000004",
-      "name": "AI Agent (Router)",
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 1,
-      "position": [1000, 150]
-    },
-    {
-      "parameters": {
-        "model": "={{ $env.OLLAMA_ROUTER_MODEL }}",
-        "baseUrl": "http://ollama:11434",
-        "options": {
-          "temperature": 0.1,
-          "topP": 0.9,
-          "maxTokens": 2048
-        }
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000005",
-      "name": "Ollama Router Model",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
-      "typeVersion": 1,
-      "position": [1300, 50]
-    },
-    {
-      "parameters": {
-        "sessionId": "={{ $json.correlation_id }}",
-        "contextWindowLength": 10
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000006",
-      "name": "Memory Router",
-      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
-      "typeVersion": 1,
-      "position": [1300, 170]
-    },
-    {
-      "parameters": {
-        "promptType": "define",
-        "text": "Identity & Authority:\nYou are \"Digital Clone\", an autonomous, fully-local executive chief of staff. You analyze READ-ONLY operational and financial data snapshots running on the owner's hardware; nothing leaves it. You excel at structured numerical analysis and clear summarization.\n\nOperational Guardrails (CRITICAL — non-negotiable):\n1. READ-ONLY LIMITATION: You have ZERO authority to execute trades, modify positions, move money, or take any irreversible external action. If the data suggests a trade, note it observationally — NEVER recommend or simulate execution.\n2. FACTUAL GROUNDING: Use ONLY the numbers present in the inbound event's `data` field. Never invent a metric, task, timestamp, or amount. If the data is insufficient, say so explicitly.\n3. MATHEMATICAL VALIDATION: For P&L/portfolio math, compute from raw payload numbers. Report absolute change, percentage change, and trade counts exactly as provided. Do not extrapolate or forecast. Show your work: include the formula and the source values.\n\nRouting:\n- alpha: use for straight summaries when no extra data is needed.\n- gamma: use when you need to fetch additional context. Emit \"http.fetch\" actions and summarize the results in `reply`.\n- deny:  use if the request violates a guardrail.\n\nOutput:\nReturn ONLY a JSON object conforming to the ai-output contract (schema_version \"1.0\"). Echo the inbound correlation_id. Keep `summary` to one line. In `reply.text` use markdown; bold key figures; bullet distinct metrics; include a short \"Data quality\" note if any expected field is missing. Tone: analytical, direct, no corporate platitudes."
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000007",
-      "name": "AI Agent (Analyst)",
-      "type": "@n8n/n8n-nodes-langchain.agent",
-      "typeVersion": 1,
-      "position": [1000, 450]
-    },
-    {
-      "parameters": {
-        "model": "={{ $env.OLLAMA_ANALYST_MODEL }}",
-        "baseUrl": "http://ollama:11434",
-        "options": {
-          "temperature": 0.1,
-          "topP": 0.9,
-          "maxTokens": 4096
-        }
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000008",
-      "name": "Ollama Analyst Model",
-      "type": "@n8n/n8n-nodes-langchain.lmChatOllama",
-      "typeVersion": 1,
-      "position": [1300, 350]
-    },
-    {
-      "parameters": {
-        "sessionId": "={{ $json.correlation_id }}",
-        "contextWindowLength": 10
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000009",
-      "name": "Memory Analyst",
-      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
-      "typeVersion": 1,
-      "position": [1300, 470]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Build the ai-output JSON from the AI Agent's response.\n// The agent outputs a JSON string; we parse, validate, and normalize it.\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  const inbound = item.json;\n  let aiOutput;\n\n  // The AI Agent's response is in .output\n  const rawOutput = (inbound.output !== undefined) ? inbound.output : (inbound.text || '');\n\n  try {\n    // Extract JSON from the agent's response (may be wrapped in markdown or have leading/trailing text)\n    let jsonStr = String(rawOutput).trim();\n    \n    // Strip markdown code fences if present\n    const fenceMatch = jsonStr.match(/```(?:json)?\\s*([\\s\\S]*?)```/);\n    if (fenceMatch) {\n      jsonStr = fenceMatch[1].trim();\n    }\n    \n    aiOutput = JSON.parse(jsonStr);\n  } catch (e) {\n    // If parsing fails, use a deny fallback\n    aiOutput = {\n      schema_version: \"1.0\",\n      correlation_id: inbound.correlation_id || '',\n      path: \"deny\",\n      summary: \"Failed to parse AI agent output as valid JSON.\",\n      guardrail: {\n        triggered: true,\n        rule: \"parse_error\",\n        message: \"The model did not return valid JSON. Raw: \" + String(rawOutput).substring(0, 200)\n      },\n      confidence: 0\n    };\n  }\n\n  // Enforce correlation_id echo (contract requirement)\n  aiOutput.correlation_id = inbound.correlation_id || aiOutput.correlation_id;\n\n  // Ensure schema_version\n  aiOutput.schema_version = aiOutput.schema_version || \"1.0\";\n\n  // Default path to deny if missing\n  if (!['alpha', 'beta', 'gamma', 'deny'].includes(aiOutput.path)) {\n    aiOutput.path = 'deny';\n    aiOutput.summary = aiOutput.summary || 'Agent returned invalid path.';\n    aiOutput.guardrail = aiOutput.guardrail || { triggered: true, rule: 'invalid_path', message: 'Model output missing valid path.' };\n  }\n\n  // Ensure summary exists\n  aiOutput.summary = aiOutput.summary || `Routed to path: ${aiOutput.path}`;\n\n  // Normalize reply\n  if (aiOutput.reply && !aiOutput.reply.format) {\n    aiOutput.reply.format = 'markdown';\n  }\n\n  // Ensure actions is an array\n  if (!Array.isArray(aiOutput.actions)) {\n    aiOutput.actions = [];\n  }\n\n  // Ensure guardrail object\n  if (!aiOutput.guardrail) {\n    aiOutput.guardrail = { triggered: false };\n  }\n\n  // Ensure confidence\n  if (typeof aiOutput.confidence !== 'number') {\n    aiOutput.confidence = aiOutput.path === 'deny' ? 1.0 : 0.8;\n  }\n\n  results.push({\n    json: {\n      // Inbound event fields (propagated for DB logging and response)\n      event_id: inbound.event_id,\n      correlation_id: inbound.correlation_id,\n      source: inbound.source,\n      type: inbound.type,\n      occurred_at: inbound.occurred_at,\n      actor: inbound.actor,\n      channel: inbound.channel,\n      text: inbound.text,\n      data: inbound.data,\n      attachments: inbound.attachments,\n      metadata: inbound.metadata,\n      raw: inbound.raw,\n\n      // AI output fields (flattened for easy access by spokes)\n      ai_schema_version: aiOutput.schema_version,\n      ai_path: aiOutput.path,\n      ai_summary: aiOutput.summary,\n      ai_reply_text: aiOutput.reply ? aiOutput.reply.text : null,\n      ai_reply_format: aiOutput.reply ? (aiOutput.reply.format || 'markdown') : null,\n      ai_actions: aiOutput.actions,\n      ai_guardrail_triggered: aiOutput.guardrail.triggered || false,\n      ai_guardrail_rule: aiOutput.guardrail.rule || null,\n      ai_guardrail_message: aiOutput.guardrail.message || null,\n      ai_confidence: aiOutput.confidence,\n\n      // Full objects for JSONB storage\n      inbound_event: JSON.parse(JSON.stringify(inbound)),\n      ai_output: aiOutput\n    }\n  });\n}\n\nreturn results;"
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000010",
-      "name": "Build ai-output",
+      "name": "Parse AI Output",
       "type": "n8n-nodes-base.code",
       "typeVersion": 1,
-      "position": [1600, 300]
-    },
-    {
-      "parameters": {
-        "jsCode": "// Prepare a safely-escaped SQL INSERT string for the downstream Postgres node.\n// JavaScript-side escaping prevents SQL injection before the query reaches Postgres.\n\nconst results = [];\n\nfor (const item of $input.all()) {\n  const d = item.json;\n\n  const esc = (s) => String(s || '').replace(/'/g, \"''\").replace(/\\\\/g, \"\\\\\\\\\").substring(0, 4000);\n  const toJsonb = (obj) => {\n    if (!obj) return 'null::jsonb';\n    return \"'\" + JSON.stringify(obj).replace(/'/g, \"''\") + \"'::jsonb\";\n  };\n\n  const dbActor = (d.actor && d.actor.display_name) ? \"'\" + esc(d.actor.display_name) + \"'\" : 'NULL';\n  const dbChannel = (d.channel && d.channel.name) ? \"'\" + esc(d.channel.name) + \"'\" : 'NULL';\n  const dbText = d.text ? \"'\" + esc(d.text) + \"'\" : 'NULL';\n  const dbSummary = d.ai_summary ? \"'\" + esc(d.ai_summary) + \"'\" : 'NULL';\n  const dbStatus = (d.ai_path === 'deny') ? 'error' : 'logged';\n\n  const sql = [\n    'INSERT INTO clone.activity_logs (source, event_type, correlation_id, actor, channel, user_query, ai_summary, inbound_event, ai_output, status)',\n    'VALUES (',\n    `  '${esc(d.source)}',`,\n    `  '${esc(d.type)}',`,\n    `  '${esc(d.correlation_id)}'::uuid,`,\n    `  ${dbActor},`,\n    `  ${dbChannel},`,\n    `  ${dbText},`,\n    `  ${dbSummary},`,\n    `  ${toJsonb(d.inbound_event)},`,\n    `  ${toJsonb(d.ai_output)},`,\n    `  '${dbStatus}'`,\n    ')',\n    'ON CONFLICT DO NOTHING;'\n  ].join('\\n');\n\n  results.push({\n    json: Object.assign({}, d, { _sql: sql })\n  });\n}\n\nreturn results;"
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000013",
-      "name": "Prepare SQL",
-      "type": "n8n-nodes-base.code",
-      "typeVersion": 1,
-      "position": [1850, 300]
-    },
-    {
-      "parameters": {
-        "operation": "executeQuery",
-        "query": "={{ $json._sql }}"
-      },
-      "id": "a1b2c3d4-1000-4000-a000-000000000011",
-      "name": "Log to DB",
-      "type": "n8n-nodes-base.postgres",
-      "typeVersion": 2,
-      "position": [2100, 400],
-      "credentials": {
-        "postgres": {
-          "id": "DC_POSTGRES_CRED",
-          "name": "Digital Clone Postgres"
-        }
-      }
+      "position": [1000, 300]
     },
     {
       "parameters": {
         "respondWith": "allEntries"
       },
-      "id": "a1b2c3d4-1000-4000-a000-000000000012",
+      "id": "a1b2c3d4-1000-4000-a000-000000000005",
       "name": "Respond to Spoke",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1,
-      "position": [2100, 200]
+      "position": [1250, 300]
     }
   ],
   "connections": {
     "Execute Workflow Trigger": {
-      "main": [
-        [
-          {
-            "node": "Validate Event",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+      "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]]
     },
-    "Validate Event": {
-      "main": [
-        [
-          {
-            "node": "Select Model",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Build Prompt": {
+      "main": [[{ "node": "Call Ollama", "type": "main", "index": 0 }]]
     },
-    "Select Model": {
-      "main": [
-        [
-          {
-            "node": "AI Agent (Router)",
-            "type": "main",
-            "index": 0
-          }
-        ],
-        [
-          {
-            "node": "AI Agent (Analyst)",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Call Ollama": {
+      "main": [[{ "node": "Parse AI Output", "type": "main", "index": 0 }]]
     },
-    "AI Agent (Router)": {
-      "main": [
-        [
-          {
-            "node": "Build ai-output",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "ai_llm": [
-        [
-          {
-            "node": "Ollama Router Model",
-            "type": "ai_llm",
-            "index": 0
-          }
-        ]
-      ],
-      "ai_memory": [
-        [
-          {
-            "node": "Memory Router",
-            "type": "ai_memory",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "AI Agent (Analyst)": {
-      "main": [
-        [
-          {
-            "node": "Build ai-output",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ],
-      "ai_llm": [
-        [
-          {
-            "node": "Ollama Analyst Model",
-            "type": "ai_llm",
-            "index": 0
-          }
-        ]
-      ],
-      "ai_memory": [
-        [
-          {
-            "node": "Memory Analyst",
-            "type": "ai_memory",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Build ai-output": {
-      "main": [
-        [
-          {
-            "node": "Prepare SQL",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "Prepare SQL": {
-      "main": [
-        [
-          {
-            "node": "Respond to Spoke",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Log to DB",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
+    "Parse AI Output": {
+      "main": [[{ "node": "Respond to Spoke", "type": "main", "index": 0 }]]
     }
   },
   "settings": {
-    "timezone": "={{ $env.GENERIC_TIMEZONE }}",
+    "timezone": "UTC",
     "saveManualExecutions": true,
     "callerPolicy": "workflowsFromSameOwner"
   },
   "staticData": null,
   "pinData": {},
-  "versionId": "1.0.0"
+  "versionId": "2.0.0"
 }

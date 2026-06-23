@@ -1,0 +1,1 @@
+[{"id":"dc-postgres-cred-001","name":"Digital Clone Postgres","type":"postgres","data":{"host":"postgres","port":5432,"database":"digital_clone","user":"digital_clone","password":"qQszuE2e2iSiNCeavKoIun/WfNfAE2Kb"}}]

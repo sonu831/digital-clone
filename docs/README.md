@@ -15,6 +15,7 @@ deployment.
 | 08 | [Troubleshooting](08-troubleshooting.md)           | Something's red.                                     |
 | 09 | [Backup & Restore](09-backup-restore.md)           | You care about not losing your data (you should).   |
 | 10 | [AI Handoff](10-ai-handoff.md)                     | You want another AI tool/model (DeepSeek, Copilot…) to continue the build. |
+| 11 | [WhatsApp Runbook & n8n 2.26 Gotchas](11-whatsapp-runbook.md) | A webhook spoke 404s/errors, or you hit the n8n 2.x draft/publish trap. |
 
 Reference material:
 

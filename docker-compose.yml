@@ -7,6 +7,7 @@
 #    ollama-init  (optional)  one-shot model puller; exits after warming models
 #    n8n          (REQUIRED)  orchestration engine — "the nervous system"
 #    open-webui   (optional)  browser playground for Ollama
+#    openclaw     (optional)  personal AI assistant — WhatsApp/Telegram/Discord
 #
 #  HOW TO TRIM THE STACK:
 #    Don't want a service? Comment out its entire block below AND any line that
@@ -30,6 +31,7 @@ volumes:
   ollama_data:
   n8n_data:
   open_webui_data:
+  openclaw_data:
 
 services:
 
@@ -157,6 +159,7 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_ROUTER_MODEL: ${OLLAMA_ROUTER_MODEL:-llama3:8b}
       OLLAMA_ANALYST_MODEL: ${OLLAMA_ANALYST_MODEL:-deepseek-r1:8b}
+      N8N_BLOCK_ENV_ACCESS_IN_NODE: "false"
     volumes:
       - n8n_data:/home/node/.n8n
       # Read-only mount so workflow JSON in the repo can be imported from the UI
@@ -204,3 +207,41 @@ services:
       retries: 5
       start_period: 30s
   # <<< OPTIONAL: OPEN WEBUI ────────────────────────────────────────────────────
+
+  # >>> OPTIONAL: OPENCLAW ──────────────────────────────────────────────────────
+  # Personal AI assistant with WhatsApp, Telegram, Discord, and iMessage skills.
+  # Shares the SAME Ollama instance. Uses OPENCLAW_MODEL as the default model.
+  # First run auto-configures an ollama-local provider. Requires Node.js 22+.
+  # Delete this whole block if you only need n8n pipelines.
+  openclaw:
+    build:
+      context: ./docker/openclaw
+    container_name: ${COMPOSE_PROJECT_NAME:-digital-clone}-openclaw
+    restart: unless-stopped
+    environment:
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_API_KEY: ollama-local
+      OPENCLAW_GATEWAY_PORT: ${OPENCLAW_GATEWAY_PORT:-18789}
+      OPENCLAW_MODEL: ${OPENCLAW_MODEL:-ollama/llama3:8b}
+      NODE_ENV: production
+    volumes:
+      - openclaw_data:/home/openclaw/.openclaw
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:${OPENCLAW_GATEWAY_PORT:-18789}"
+    networks:
+      - digital_clone_net
+    depends_on:
+      ollama:
+        condition: service_healthy
+    healthcheck:
+      # The gateway speaks WebSocket, not plain HTTP — a GET to "/" returns an
+      # empty reply, so curl/health checks fail. Just confirm the port is
+      # accepting TCP connections (bash /dev/tcp; bash is installed in the image).
+      test: ["CMD-SHELL", "bash -c 'exec 3<>/dev/tcp/127.0.0.1/${OPENCLAW_GATEWAY_PORT:-18789}' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      # First boot runs `openclaw setup`, which briefly waits for a gateway before
+      # this one starts — give it generous headroom before counting as unhealthy.
+      start_period: 90s
+  # <<< OPTIONAL: OPENCLAW ──────────────────────────────────────────────────────

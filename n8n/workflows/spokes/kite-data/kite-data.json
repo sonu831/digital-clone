@@ -1,0 +1,351 @@
+{
+  "id": "kite-data",
+  "name": "kite-data",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 15
+            }
+          ]
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000001",
+      "name": "Poll Every 15 Min",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.KITE_API_BASE_URL }}/portfolio/positions",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'token ' + $env.KITE_API_KEY + ':' + $env.KITE_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "X-Kite-Version",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000002",
+      "name": "Fetch Positions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 200]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.KITE_API_BASE_URL }}/portfolio/holdings",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'token ' + $env.KITE_API_KEY + ':' + $env.KITE_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "X-Kite-Version",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000003",
+      "name": "Fetch Holdings",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 400]
+    },
+    {
+      "parameters": {
+        "url": "={{ $env.KITE_API_BASE_URL }}/user/margins",
+        "method": "GET",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "={{ 'token ' + $env.KITE_API_KEY + ':' + $env.KITE_ACCESS_TOKEN }}"
+            },
+            {
+              "name": "X-Kite-Version",
+              "value": "3"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 15000,
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000004",
+      "name": "Fetch Margins",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [500, 600]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge Kite API responses into a data_snapshot inbound-event.\n// Three parallel branches: positions, holdings, margins.\n// The Hub routes data_snapshot → analyst model for numerical reasoning.\n\nconst items = $input.all();\n\nlet positions = { net: [], day: [] };\nlet holdings = [];\nlet margins = {};\nlet kiteErrors = [];\n\nfor (const item of items) {\n  const j = item.json;\n\n  if (j.status === 'error') {\n    kiteErrors.push({ source: 'kite', message: j.message, code: j.error_type });\n    continue;\n  }\n\n  // Kite API wraps responses: { status: 'success', data: {...} }\n  const data = j.data || j;\n\n  // Positions response has 'net' and 'day' arrays\n  if (data.net !== undefined || data.day !== undefined) {\n    positions = {\n      net: (data.net || []).map(p => ({\n        symbol: p.tradingsymbol,\n        quantity: p.quantity,\n        product: p.product,\n        avg_price: p.average_price,\n        last_price: p.last_price,\n        pnl: p.pnl,\n        unrealised: p.unrealised,\n        realised: p.realised,\n        buy_qty: p.buy_quantity,\n        sell_qty: p.sell_quantity\n      })),\n      day: (data.day || []).map(p => ({\n        symbol: p.tradingsymbol,\n        quantity: p.quantity,\n        product: p.product,\n        avg_price: p.average_price,\n        last_price: p.last_price,\n        pnl: p.pnl,\n        unrealised: p.unrealised,\n        realised: p.realised,\n        buy_qty: p.buy_quantity,\n        sell_qty: p.sell_quantity\n      }))\n    };\n    continue;\n  }\n\n  // Holdings: array of long-term holdings\n  if (Array.isArray(data)) {\n    holdings = data.map(h => ({\n      symbol: h.tradingsymbol,\n      quantity: h.quantity,\n      product: h.product,\n      avg_price: h.average_price,\n      last_price: h.last_price,\n      pnl: h.pnl,\n      unrealised: h.unrealised\n    }));\n    continue;\n  }\n\n  // Margins: equity, commodity segments\n  if (data.equity || data.commodity) {\n    margins = {\n      equity: data.equity ? {\n        enabled: data.equity.enabled,\n        net: data.equity.net,\n        available: {\n          cash: data.equity.available ? data.equity.available.cash : 0,\n          intraday_payin: data.equity.available ? data.equity.available.intraday_payin : 0,\n          delivery_margin: data.equity.available ? data.equity.available.delivery_margin : 0\n        },\n        utilised: {\n          debits: data.equity.utilised ? data.equity.utilised.debits : 0,\n          exposure: data.equity.utilised ? data.equity.utilised.exposure : 0,\n          spans: data.equity.utilised ? data.equity.utilised.spans : 0,\n          option_premium: data.equity.utilised ? data.equity.utilised.option_premium : 0\n        }\n      } : null,\n      commodity: data.commodity ? {\n        enabled: data.commodity.enabled,\n        net: data.commodity.net,\n        available: data.commodity.available || {},\n        utilised: data.commodity.utilised || {}\n      } : null\n    };\n    continue;\n  }\n}\n\nconst totalPnL = [\n  ...positions.net.map(p => p.pnl || 0),\n  ...positions.day.map(p => p.pnl || 0),\n  ...holdings.map(h => h.pnl || 0)\n].reduce((a, b) => a + b, 0);\n\nconst dataPayload = {\n  positions,\n  holdings,\n  margins,\n  summary: {\n    total_pnl: totalPnL,\n    open_positions: positions.net.length + positions.day.length,\n    holdings_count: holdings.length,\n    equity_available: margins.equity ? margins.equity.available.cash : null\n  },\n  errors: kiteErrors.length > 0 ? kiteErrors : null,\n  snapshot_time: new Date().toISOString()\n};\n\nconst correlationId = crypto.randomUUID();\n\nreturn [{\n  json: {\n    schema_version: '1.0',\n    event_id: crypto.randomUUID(),\n    correlation_id: correlationId,\n    source: 'kite',\n    type: 'data_snapshot',\n    occurred_at: new Date().toISOString(),\n    text: 'Portfolio snapshot: analyze positions, P&L, margin utilisation. Flag any unusual exposure concentration, stop-loss breaches, or margin nearing limits.',\n    data: dataPayload,\n    attachments: [],\n    metadata: {\n      trigger: 'scheduled',\n      poll_interval_minutes: 15,\n      exchange: 'NSE/BSE'\n    }\n  }\n}];"
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000005",
+      "name": "Build snapshot event",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [750, 400]
+    },
+    {
+      "parameters": {
+        "source": "database",
+        "workflowId": {
+          "__rl": true,
+          "value": "ai-hub",
+          "mode": "list",
+          "cachedResultName": "ai-hub"
+        },
+        "mode": "wait",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000006",
+      "name": "Call Hub",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 2,
+      "position": [1000, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "alpha",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "gamma",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.ai_path }}",
+                    "rightValue": "deny",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "or"
+              }
+            }
+          ]
+        },
+        "options": {
+          "fallbackOutput": "extra"
+        }
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000007",
+      "name": "Route by Path",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [1250, 400]
+    },
+    {
+      "parameters": {
+        "jsCode": "// This spoke is INPUT only — data_snapshot flows through the Hub.\n// To deliver results to you, chain an output spoke:\n//   1. Connect the Route node's alpha/gamma output to an Execute Workflow node\n//      pointing at slack-inbound / telegram-inbound / whatsapp-inbound (output mode).\n//   2. Those spokes will deliver the ai_reply_text to your channel.\n//\n// For now, results go to the DB only (Hub handles that).\nreturn $input.all();"
+      },
+      "id": "f6a7b8c9-6000-4000-f000-000000000008",
+      "name": "Deliver (stub)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1500, 400]
+    }
+  ],
+  "connections": {
+    "Poll Every 15 Min": {
+      "main": [
+        [
+          {
+            "node": "Fetch Positions",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Holdings",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Fetch Margins",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Positions": {
+      "main": [
+        [
+          {
+            "node": "Build snapshot event",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Holdings": {
+      "main": [
+        [
+          {
+            "node": "Build snapshot event",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Fetch Margins": {
+      "main": [
+        [
+          {
+            "node": "Build snapshot event",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Build snapshot event": {
+      "main": [
+        [
+          {
+            "node": "Call Hub",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Hub": {
+      "main": [
+        [
+          {
+            "node": "Route by Path",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Path": {
+      "main": [
+        [
+          {
+            "node": "Deliver (stub)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deliver (stub)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Deliver (stub)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "timezone": "={{ $env.GENERIC_TIMEZONE }}",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "1.0.0"
+}

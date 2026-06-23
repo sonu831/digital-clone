@@ -7,7 +7,7 @@ COMPOSE := docker compose
 .DEFAULT_GOAL := help
 
 .PHONY: help bootstrap up down restart logs ps health pull-models \
-        export-workflows import-workflows backup migrate clean nuke
+        export-workflows import-workflows backup migrate clean nuke tunnel tunnel-logs
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -40,8 +40,11 @@ pull-models: ## Pull the models listed in OLLAMA_MODELS
 export-workflows: ## Export n8n workflows from the DB into n8n/workflows/
 	$(COMPOSE) exec n8n n8n export:workflow --all --separate --pretty --output=/workflows
 
-import-workflows: ## Import the JSON in n8n/workflows/ into n8n
-	$(COMPOSE) exec n8n n8n import:workflow --separate --input=/workflows
+import-workflows: ## Import all workflow JSON (recursively, incl. spokes/) into n8n
+	# Single-file --input preserves each workflow's "id" (so spokes resolve the
+	# Hub by id "ai-hub"). --separate regenerates ids and would break those links.
+	# Idempotent: re-running upserts by id rather than creating duplicates.
+	$(COMPOSE) exec -T n8n sh -c 'set -e; for f in $$(find /workflows -name "*.json" | sort); do echo ">> $$f"; n8n import:workflow --input="$$f"; done'
 
 backup: ## Dump Postgres (n8n state + clone schema) to ./backups/
 	@./scripts/backup.sh
@@ -58,3 +61,10 @@ clean: ## Stop and remove containers + networks (KEEPS data volumes)
 
 nuke: ## DESTROY everything incl. data volumes (irreversible — back up first!)
 	$(COMPOSE) down -v --remove-orphans
+
+tunnel: ## Start public tunnel (cloudflared) + show n8n logs side by side
+	@echo "Starting tunnel... open a second terminal and run: make logs s=n8n"
+	@cloudflared tunnel --url http://localhost:5678 2>&1 | grep -E "trycloudflare\.com|error|ERR"
+
+tunnel-logs: ## Tail n8n logs (run in second terminal alongside make tunnel)
+	$(COMPOSE) logs -f n8n

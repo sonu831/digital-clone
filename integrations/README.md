@@ -15,8 +15,12 @@ discover it.
 | ---------------- | ------ | --------------- | --------- | ------------------------------------------------- |
 | `slack-inbound`  | both   | Slack           | core      | `n8n/workflows/spokes/slack-inbound/`             |
 | `cron-debrief`   | input  | Schedule + broker | core    | `n8n/workflows/spokes/cron-debrief/`              |
-| `discord-inbound`| both   | Discord         | planned   | _your PR here_                                    |
-| `telegram-inbound`| both  | Telegram        | planned   | _your PR here_                                    |
+| `gmail-inbound`  | both   | Gmail           | core      | `n8n/workflows/spokes/gmail-inbound/`             |
+| `gmail-digest`   | input  | Gmail + Schedule| core      | `n8n/workflows/spokes/gmail-digest/`              |
+| `kite-data`      | input  | Zerodha Kite    | core      | `n8n/workflows/spokes/kite-data/`                 |
+| `whatsapp-inbound`| both  | WhatsApp/Twilio | core      | `n8n/workflows/spokes/whatsapp-inbound/`          |
+| `discord-inbound`| both   | Discord         | core      | `n8n/workflows/spokes/discord-inbound/`           |
+| `telegram-inbound`| both  | Telegram        | core      | `n8n/workflows/spokes/telegram-inbound/`          |
 | `notion-out`     | output | Notion          | planned   | _your PR here_                                    |
 | `binance-data`   | input  | Binance (read-only) | planned | _your PR here_                                  |
 

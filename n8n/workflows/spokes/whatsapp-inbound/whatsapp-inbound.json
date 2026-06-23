@@ -1,0 +1,94 @@
+{
+  "id": "whatsapp-inbound",
+  "name": "whatsapp-inbound",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "whatsapp",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "id": "wh-001",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [250, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\n\nfor (const item of items) {\n  const tw = item.json.body || item.json;\n  const from = tw.From || '';\n  const name = tw.ProfileName || 'User';\n  const body = tw.Body || '';\n\n  if (!body) {\n    results.push({ json: { _skip: true } });\n    continue;\n  }\n\n  const prompt = 'You are Digital Clone, a helpful AI. Be concise.\\n\\nUser (' + name + ') says: \"' + body + '\"\\n\\nReply in plain text, under 300 characters.';\n\n  results.push({\n    json: {\n      _prompt: prompt,\n      _from: from,\n      _to: tw.To || ''\n    }\n  });\n}\n\nreturn results;"
+      },
+      "id": "wh-002",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [500, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\nfor (const item of items) {\n  if (!item.json._skip) results.push(item);\n}\nreturn results;"
+      },
+      "id": "wh-007",
+      "name": "Skip Empty",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [650, 300]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://ollama:11434/api/generate",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'llama3:8b', prompt: $json._prompt, stream: false }) }}",
+        "options": {
+          "timeout": 120000
+        }
+      },
+      "id": "wh-003",
+      "name": "Call Ollama",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [800, 300]
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst results = [];\nconst promptNode = $('Build Prompt');\n\nfor (let i = 0; i < items.length; i++) {\n  const d = items[i].json;\n  const orig = promptNode ? promptNode.item.json : {};\n  const raw = d.response || '';\n  const reply = String(raw).trim().substring(0, 1500) || 'I received your message.';\n  const from = d._from || orig._from || '';\n  const to = d._to || orig._to || '';\n\n  results.push({\n    json: { _reply: reply, _from: from, _to: to }\n  });\n}\n\nreturn results;"
+      },
+      "id": "wh-004",
+      "name": "Parse Reply",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [1050, 300]
+    },
+    {
+      "parameters": {
+        "resource": "sms",
+        "operation": "send",
+        "from": "whatsapp:+14155238886",
+        "to": "={{ $json._from }}",
+        "message": "={{ $json._reply }}"
+      },
+      "id": "wh-005",
+      "name": "Reply WhatsApp",
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [1300, 300]
+    }
+  ],
+  "connections": {
+    "Webhook": { "main": [[{ "node": "Build Prompt", "type": "main", "index": 0 }]] },
+    "Build Prompt": { "main": [[{ "node": "Skip Empty", "type": "main", "index": 0 }]] },
+    "Skip Empty": { "main": [[{ "node": "Call Ollama", "type": "main", "index": 0 }]] },
+    "Call Ollama": { "main": [[{ "node": "Parse Reply", "type": "main", "index": 0 }]] },
+    "Parse Reply": { "main": [[{ "node": "Reply WhatsApp", "type": "main", "index": 0 }]] }
+  },
+  "settings": {
+    "timezone": "Asia/Kolkata",
+    "saveManualExecutions": true
+  },
+  "staticData": null,
+  "pinData": {},
+  "versionId": "2.0.1"
+}

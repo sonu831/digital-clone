@@ -1,4 +1,5 @@
 {
+  "id": "slack-inbound",
   "name": "slack-inbound",
   "nodes": [
     {
@@ -45,7 +46,12 @@
     {
       "parameters": {
         "source": "database",
-        "workflowId": "ai-hub",
+        "workflowId": {
+          "__rl": true,
+          "value": "ai-hub",
+          "mode": "list",
+          "cachedResultName": "ai-hub"
+        },
         "mode": "wait",
         "options": {
           "waitForSubWorkflow": true

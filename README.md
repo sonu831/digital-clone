@@ -41,6 +41,7 @@ Here's what ships out of the box, and what you can add:
 | **Read-only safety** | The AI's system prompt is **hardcoded to refuse** any trade, transfer, purchase, or irreversible action. If you ask it to buy stock, it replies "Operational bounds exceeded. Transaction denied." — no config needed | `ai-hub` system prompt |
 | **Two-model intelligence** | Quick messages get routed to a fast model (Llama 3); financial data snapshots get routed to a deep-reasoning model (DeepSeek-R1). Both are local | `ai-hub` model switch |
 | **Model playground** | Optional Open WebUI at `:8080` — a ChatGPT-style interface to test prompts, compare models, and prototype before wiring live | `open-webui` (optional) |
+| **WhatsApp / Telegram / Discord** | Optional OpenClaw — a personal AI agent you can message from any chat app, with skills, memory, and proactive heartbeats. Shares the same Ollama brain. | `openclaw` (optional) |
 
 ### Extend it (without touching the AI core)
 
@@ -63,6 +64,7 @@ edit the Hub to add an integration — you write a spoke that speaks the contrac
 | **Ollama**     | Local LLM inference ("the brain")      | Llama 3 + DeepSeek-R1 |
 | **PostgreSQL** | n8n state + your event log             | `16-alpine`        |
 | **Open WebUI** | Optional model playground              | `main` (toggleable) |
+| **OpenClaw**   | Optional personal AI assistant — WhatsApp, Telegram, Discord | `latest` (toggleable) |
 
 ## Architecture
 
@@ -403,6 +405,7 @@ make down              # stop (keeps all data volumes)
 make ps                # show container status
 make logs s=n8n        # tail n8n logs
 make logs s=ollama     # tail Ollama logs
+make logs s=openclaw   # tail OpenClaw logs
 make pull-models       # re-pull models listed in OLLAMA_MODELS
 make backup            # pg_dump to ./backups/
 make export-workflows  # save live workflows from n8n DB → JSON files
@@ -412,11 +415,60 @@ make help              # show all available commands
 
 ---
 
+## 🦞 Optional: OpenClaw (WhatsApp / Telegram / Discord)
+
+OpenClaw is a personal AI assistant that lives in your chat apps. It uses the **same
+Ollama instance** as Digital Clone — no cloud API, no data egress.
+
+**What it adds:**
+- Message your AI from **WhatsApp, Telegram, Discord, iMessage** (whatever you use)
+- **Skills** — it can check your calendar, send emails, manage tasks, control smart home
+- **Memory** — remembers conversations across sessions
+- **Proactive heartbeats** — checks in with summaries, reminders, weather
+- **Multi-agent** — spin up specialist agents for coding, research, etc.
+
+**How it works with Digital Clone:**
+```
+WhatsApp/Telegram ──► OpenClaw ──► Ollama (shared) ◄── n8n Hub ◄── Slack
+                            │                              │
+                            └── skills/actions             └── spoke pipelines
+```
+Two systems, one brain. n8n handles structured workflows + audit logging; OpenClaw
+handles casual chat + personal assistant tasks.
+
+### Setup
+
+```bash
+# OpenClaw is already in docker-compose as an optional service.
+# Bring it up (if not already running):
+docker compose up -d openclaw
+
+# One-time onboard — configures OpenClaw to use your local Ollama:
+docker compose exec openclaw openclaw onboard --non-interactive \
+  --auth-choice ollama --accept-risk
+
+# Set your preferred model:
+docker compose exec openclaw openclaw models set ollama/llama3:8b
+```
+
+Then:
+1. Download the **OpenClaw Companion** app for [macOS](https://github.com/openclaw/openclaw/releases/latest) or [Windows](https://github.com/openclaw/openclaw/releases/latest/download/OpenClawCompanion-Setup-x64.exe)
+2. Open it and pair with `http://localhost:18789`
+3. Add your messaging channels (WhatsApp QR, Telegram bot token, Discord bot token)
+4. Start chatting with your AI from any device
+
+**To remove OpenClaw:** comment out its block in `docker-compose.yml` (marked
+`# >>> OPTIONAL: OPENCLAW`) and run `docker compose up -d`.
+
+Full docs: [docs.openclaw.ai](https://docs.openclaw.ai) · [GitHub](https://github.com/openclaw/openclaw)
+
+---
+
 ## Troubleshooting common issues
 
 | Problem | Likely cause | Fix |
 | --- | --- | --- |
-| `make bootstrap` fails | Port already in use | Change ports in `.env` (`N8N_PORT`, `OLLAMA_PORT`, etc.) |
+| `make bootstrap` fails | Port already in use | Change ports in `.env` (`N8N_PORT`, `OLLAMA_PORT`, `OPENCLAW_GATEWAY_PORT`, etc.) |
 | Ollama model pull hangs | Slow network or low disk space | Check disk: `df -h`. Re-run: `make pull-models` |
 | Slack bot doesn't respond | Webhook URL not configured in Slack | Go to Slack App → Event Subscriptions → paste the webhook URL from n8n's `slack-inbound` workflow |
 | AI replies are slow | CPU inference is underpowered | First message after idle takes longest (model loading). Subsequent messages ~5-15s. Enable GPU for speed |
@@ -424,6 +476,8 @@ make help              # show all available commands
 | `cron-debrief` fails | No broker keys set | Expected if you skipped broker config. Disable the workflow or set the keys |
 | Credentials not working | Wrong credential name | Names must match exactly: `Digital Clone Postgres`, `Digital Clone Slack` |
 | Postgres connection refused | Using `localhost` instead of `postgres` | Inside Docker, use service name `postgres`, not `localhost` |
+| OpenClaw can't connect to Ollama | `OLLAMA_BASE_URL` wrong in container | Should be `http://ollama:11434` (set in entrypoint). Check: `docker compose logs openclaw` |
+| OpenClaw not responding | Gateway not paired or port blocked | Check: `curl http://localhost:18789/health`. Re-run `docker compose exec openclaw openclaw onboard` |
 
 See [docs/08-troubleshooting.md](docs/08-troubleshooting.md) for more.
 
