@@ -12,7 +12,7 @@
     },
     {
       "parameters": {
-        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let msg=it.json,from='',sub='',email='',name='';\n if(msg.from||msg.From){from=msg.from||msg.From||''}\n if(msg.subject||msg.Subject){sub=msg.subject||msg.Subject||''}\n if(!from&&msg.payload&&msg.payload.headers){\n  let h=msg.payload.headers;\n  if(Array.isArray(h)){\n   let f=h.find(x=>x&&x.name==='From'),s=h.find(x=>x&&x.name==='Subject');\n   from=f?f.value||'':'';sub=sub||(s?s.value||'':'');\n  }else{from=h.from||h.From||'';sub=sub||h.subject||h.Subject||''}\n }\n if(!from){r.push({json:{_skip:true}});continue}\n let m=from.match(/<?([^>]+)>?/);email=m?m[1].trim():from.trim();\n let nm=from.match(/^([^<]*)/);name=(nm&&nm[1])?nm[1].trim().replace(/\"/g,''):from.split('<')[0].trim().replace(/\"/g,'');\n if(!name)name=email;\n let body=msg.snippet||'';if(!sub)sub='(no subject)';\n let prompt='You are Digital Clone. Classify this email:\\nFrom: '+name+' ('+email+')\\nSubject: '+sub+'\\n'+body.substring(0,600)+'\\n\\nIf this needs MY personal reply, say NEEDS_REPLY and draft a reply under 300 chars. If it is just informational/no action needed, say INFO_ONLY.';\n r.push({json:{_prompt:prompt,_name:name,_email:email,_sub:sub,_snippet:body.substring(0,120),_mid:msg.id||'',_tid:msg.threadId||''}})\n}\nreturn r",
+        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let msg=it.json,from='',sub='',email='',name='';\n if(msg.from||msg.From)from=msg.from||msg.From||'';\n if(msg.subject||msg.Subject)sub=msg.subject||msg.Subject||'';\n if(!from&&msg.payload&&msg.payload.headers){\n  let h=msg.payload.headers;\n  if(Array.isArray(h)){\n   let f=h.find(x=>x&&x.name==='From'),s=h.find(x=>x&&x.name==='Subject');\n   from=f?f.value||'':'';sub=sub||(s?s.value||'':'');\n  }else{from=h.from||h.From||'';sub=sub||h.subject||h.Subject||''}\n }\n if(!from){r.push({json:{_skip:true}});continue}\n let m=from.match(/<?([^>@]+@[^>]+)>?/);\n if(m)email=m[1].trim();else{let parts=from.split(' ');for(let p of parts){if(p.includes('@')){email=p.replace(/[<>]/g,'');break}}}\n if(!email)email=from;name=from.replace(/<.*>/,'').replace(/\"/g,'').trim()||email;\n let body=msg.snippet||'';if(!sub)sub='(no subject)';\n let prompt='You are Digital Clone. Email: '+name+' Subject: '+sub+' Body: '+body.substring(0,800)+' If this needs a reply, write ONLY the reply text under 300 chars. If informational, write SKIP.';\n r.push({json:{_prompt:prompt,_name:name,_email:email,_sub:sub,_snippet:body.substring(0,100),_mid:msg.id||'',_tid:msg.threadId||''}})\n}\nreturn r",
         "mode": "runOnceForAllItems"
       },
       "id": "gm-003", "name": "Build Prompt", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [700,300]
@@ -23,23 +23,45 @@
     },
     {
       "parameters": {
-        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let d=it.json,url='http://ollama:11434/api/generate',body=JSON.stringify({model:'llama3:8b',prompt:d._prompt,stream:false});\n try{\n  let resp=await this.helpers.httpRequest({method:'POST',url,body,headers:{'Content-Type':'application/json'},timeout:120000});\n  let reply=String(resp.response||'').trim().substring(0,1500)||'Got it!';\n  // Skip if AI says INFO_ONLY - just mark done silently\n  if(reply.includes('INFO_ONLY')){r.push({json:{_mid:d._mid}});continue}\n  let tg='📧 *'+d._name+'*\\n'+d._sub+'\\n\\n'+d._snippet+'\\n\\n🤖: '+reply;\n  let wa='📧 '+d._name+'\\n'+d._sub+'\\n\\n'+d._snippet+'\\n\\n🤖: '+reply;\n  r.push({json:{_tg:tg,_wa:wa,_reply:reply,_email:d._email,_sub:d._sub,_mid:d._mid,_tid:d._tid}})\n }catch(e){r.push({json:{_mid:d._mid}})}\n}\nreturn r",
+        "jsCode": "let items=$input.all(),r=[];\nlet sd=$getWorkflowStaticData('global');\nif(!sd.pending)sd.pending={};\nfor(let it of items){\n let d=it.json,url='http://ollama:11434/api/generate',body=JSON.stringify({model:'llama3:8b',prompt:d._prompt,stream:false});\n try{\n  let resp=await this.helpers.httpRequest({method:'POST',url,body,headers:{'Content-Type':'application/json'},timeout:120000});\n  let reply=String(resp.response||'').trim().substring(0,1500)||'';\n  if(!reply||reply==='SKIP'){r.push({json:{_info_only:true,_mid:d._mid}});continue}\n  let key='email_'+Date.now();\n  sd.pending[key]={email:d._email,sub:d._sub,draft:reply,tid:d._tid};\n  let line=d._name+': '+d._sub;\n  let tg=line+'\\n\\n🤖 '+reply+'\\n\\nReply yes/'+key+' to send';\n  let wa=line+'\\n\\n🤖 '+reply+'\\n\\nReply with yes/'+key+' to send';\n  r.push({json:{_tg:tg,_wa:wa,_reply:reply,_email:d._email,_sub:d._sub,_mid:d._mid,_tid:d._tid,_key:key}})\n }catch(e){r.push({json:{_info_only:true,_mid:d._mid}})}\n}\nreturn r",
         "mode": "runOnceForAllItems"
       },
       "id": "gm-004", "name": "AI+Parse", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1050,300]
     },
     {
+      "parameters": {
+        "rules": { "values": [{"conditions":{"options":{"caseSensitive":false,"typeValidation":"strict"},"conditions":[{"leftValue":"={{ $json._info_only }}","rightValue":true,"operator":{"type":"boolean","operation":"equals"}}],"combinator":"and"}}] },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "gm-009", "name": "Route", "type": "n8n-nodes-base.switch", "typeVersion": 3, "position": [1250,300]
+    },
+    {
       "parameters": { "resource": "message", "operation": "sendMessage", "chatId": "718322381", "text": "={{ $json._tg }}", "additionalFields": {} },
-      "id": "gm-010", "name": "Notify TG", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1250,200],
+      "id": "gm-010", "name": "Notify TG", "type": "n8n-nodes-base.telegram", "typeVersion": 1, "position": [1450,200],
       "credentials": { "telegramApi": { "id": "dc-telegram-cred-001", "name": "Digital Clone Telegram" } }
     },
     {
       "parameters": { "resource": "sms", "operation": "send", "from": "whatsapp:+14155238886", "to": "whatsapp:+919026867140", "message": "={{ $json._wa }}" },
-      "id": "gm-011", "name": "Notify WA", "type": "n8n-nodes-base.twilio", "typeVersion": 1, "position": [1250,400]
+      "id": "gm-011", "name": "Notify WA", "type": "n8n-nodes-base.twilio", "typeVersion": 1, "position": [1450,400]
     },
     {
       "parameters": { "resource": "message", "operation": "modify", "messageId": "={{ $json._mid }}", "addLabelIds": ["DC_Processed"], "removeLabelIds": ["UNREAD"] },
-      "id": "gm-008b", "name": "Mark Done", "type": "n8n-nodes-base.gmail", "typeVersion": 2, "position": [1500,300]
+      "id": "gm-012", "name": "Mark Done (info)", "type": "n8n-nodes-base.gmail", "typeVersion": 2, "position": [1450,550]
+    },
+    {
+      "parameters": { "httpMethod": "POST", "path": "email-send", "responseMode": "lastNode" },
+      "id": "gm-100", "name": "Email Send Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [250,550]
+    },
+    {
+      "parameters": {
+        "jsCode": "let items=$input.all();\nlet sd=$getWorkflowStaticData('global');\nif(!sd.pending)sd.pending={};\nfor(let it of items){\n let d=it.json,body=d.body||d,text=(body.text||body.msg||'').trim();\n // Parse: yes/email_12345 or just use latest\n let pending=null;\n let match=text.match(/yes\\/(email_\\d+)/i);\n if(match&&sd.pending[match[1]]){pending=sd.pending[match[1]];delete sd.pending[match[1]]}\n else{\n  let keys=Object.keys(sd.pending);\n  if(keys.length>0){pending=sd.pending[keys[0]];delete sd.pending[keys[0]]}\n }\n if(!pending)continue;\n return [{json:{_email:pending.email,_sub:pending.sub,_draft:pending.draft,_tid:pending.tid}}]\n}\nreturn items",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "gm-101", "name": "Get Pending", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [500,550]
+    },
+    {
+      "parameters": { "resource": "message", "operation": "send", "sendTo": "={{ $json._email }}", "subject": "={{ 'Re: '+$json._sub }}", "messageType": "text", "message": "={{ $json._draft }}\n\n---\nSent by Digital Clone", "options": { "threadId": "={{ $json._tid }}" } },
+      "id": "gm-102", "name": "Send Email", "type": "n8n-nodes-base.gmail", "typeVersion": 2, "position": [750,550]
     }
   ],
   "connections": {
@@ -47,10 +69,11 @@
     "Fetch Unread": {"main":[[{"node":"Build Prompt","type":"main","index":0}]]},
     "Build Prompt": {"main":[[{"node":"Skip Empty","type":"main","index":0}]]},
     "Skip Empty": {"main":[[{"node":"AI+Parse","type":"main","index":0}]]},
-    "AI+Parse": {"main":[[{"node":"Notify TG","type":"main","index":0},{"node":"Notify WA","type":"main","index":0}]]},
-    "Notify TG": {"main":[[{"node":"Mark Done","type":"main","index":0}]]},
-    "Notify WA": {"main":[[{"node":"Mark Done","type":"main","index":0}]]}
+    "AI+Parse": {"main":[[{"node":"Route","type":"main","index":0}]]},
+    "Route": {"main":[[{"node":"Mark Done (info)","type":"main","index":0}],[{"node":"Notify TG","type":"main","index":0},{"node":"Notify WA","type":"main","index":0}]]},
+    "Email Send Webhook": {"main":[[{"node":"Get Pending","type":"main","index":0}]]},
+    "Get Pending": {"main":[[{"node":"Send Email","type":"main","index":0}]]}
   },
   "settings": { "timezone": "Asia/Kolkata", "saveManualExecutions": true },
-  "staticData": null, "pinData": {}, "versionId": "3.5.0"
+  "staticData": null, "pinData": {}, "versionId": "4.0.0"
 }

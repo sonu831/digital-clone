@@ -2,44 +2,43 @@
   "id": "telegram-inbound",
   "name": "telegram-inbound",
   "nodes": [
+    { "parameters": { "httpMethod": "POST", "path": "telegram", "responseMode": "lastNode" }, "id": "t1", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [250,300] },
     {
-      "parameters": { "httpMethod": "POST", "path": "telegram", "responseMode": "lastNode", "options": {} },
-      "id": "tg-w01", "name": "Webhook", "type": "n8n-nodes-base.webhook", "typeVersion": 2, "position": [250,300]
+      "parameters": {
+        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let d=it.json,b=d.body||d,msg=b.message||b.edited_message||b;\n if(!msg||!msg.text){continue}\n let text=msg.text.trim(),cid=String(msg.chat.id),from=msg.from||{},name=[from.first_name,from.last_name].filter(Boolean).join(' ')||from.username||'User';\n let yesMatch=text.match(/^yes\\/(email_\\d+)/i),isYes=!!yesMatch||text.toLowerCase()==='yes';\n let noMatch=text.match(/^no\\/(email_\\d+)/i),isNo=!!noMatch||text.toLowerCase()==='no';\n if(isYes||isNo){\n  r.push({json:{_is_cmd:true,_action:isYes?'send':'skip',_text:text,_chat_id:cid,_reply_to:msg.message_id}});\n  continue;\n }\n let prompt='You are Digital Clone, helpful AI. Be concise.\\nUser ('+name+'): '+JSON.stringify(text)+'\\nReply plain text, under 500 chars.';\n r.push({json:{_is_chat:true,_prompt:prompt,_chat_id:cid,_reply_to:msg.message_id}})\n}\nreturn r",
+        "mode": "runOnceForAllItems"
+      },
+      "id": "t2", "name": "Parse Message", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [500,300]
     },
     {
       "parameters": {
-        "jsCode": "let items=$input.all(),r=[];\nfor(let it of items){\n let d=it.json,body=d.body||d,msg=body.message||body.edited_message||body;\n if(!msg||!msg.text){r.push({json:{_skip:true}});continue}\n let chat=msg.chat||{},from=msg.from||{},text=msg.text||'',cid=String(chat.id),name=[from.first_name,from.last_name].filter(Boolean).join(' ')||from.username||'User';\n let prompt='You are Digital Clone, helpful AI. Be concise.\\nUser ('+name+') says: '+JSON.stringify(text)+'\\nReply in plain text, under 500 chars.';\n r.push({json:{_prompt:prompt,_chat_id:cid,_reply_to:msg.message_id}})\n}\nreturn r",
-        "mode": "runOnceForAllItems"
+        "rules": { "values": [{"conditions":{"options":{"caseSensitive":false,"typeValidation":"strict"},"conditions":[{"leftValue":"={{ $json._is_cmd }}","rightValue":true,"operator":{"type":"boolean","operation":"equals"}}],"combinator":"and"}}] },
+        "options": { "fallbackOutput": "extra" }
       },
-      "id": "tg-w02", "name": "Build Prompt", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [500,300]
+      "id": "t9", "name": "Route", "type": "n8n-nodes-base.switch", "typeVersion": 3, "position": [750,300]
     },
+    { "parameters": { "jsCode": "let items=$input.all(),r=[];for(let i of items){if(i.json._prompt)r.push(i)}return r", "mode": "runOnceForAllItems" }, "id": "t3", "name": "Skip Empty", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [900,300] },
+    { "parameters": { "method": "POST", "url": "http://ollama:11434/api/generate", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ model: 'llama3:8b', prompt: $json._prompt, stream: false }) }}", "options": { "timeout": 120000 } }, "id": "t4", "name": "Call Ollama", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1050,300] },
     {
-      "parameters": { "jsCode": "let items=$input.all(),r=[];for(let i of items){if(!i.json._skip)r.push(i)}return r", "mode": "runOnceForAllItems" },
-      "id": "tg-w06", "name": "Skip Empty", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [650,300]
+      "parameters": { "jsCode": "let items=$input.all(),r=[],pn=$('Parse Message');\nfor(let i=0;i<items.length;i++){\n let d=items[i].json,orig=pn?pn.item.json:{},raw=d.response||'',reply=String(raw).trim().substring(0,3500)||'OK';\n r.push({json:{_reply:reply,_chat_id:d._chat_id||orig._chat_id||''}})\n}\nreturn r", "mode": "runOnceForAllItems" },
+      "id": "t5", "name": "Parse Reply", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1200,300]
     },
+    { "parameters": { "method": "POST", "url": "https://api.telegram.org/bot8769988931:AAGoozgz1HOboi-zUcw8EaBcMyihzztZScI/sendMessage", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ chat_id: $json._chat_id, text: $json._reply }) }}", "options": { "timeout": 10000 } }, "id": "t6", "name": "Reply TG", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1400,300] },
     {
-      "parameters": { "method": "POST", "url": "http://ollama:11434/api/generate", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ model: 'llama3:8b', prompt: $json._prompt, stream: false }) }}", "options": { "timeout": 120000 } },
-      "id": "tg-w03", "name": "Call Ollama", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [800,300]
+      "parameters": { "method": "POST", "url": "http://localhost:5678/webhook/email-send", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ msg: $json._text, chat_id: $json._chat_id }) }}", "options": { "timeout": 10000 } },
+      "id": "t7", "name": "Call Email Send", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [900,500]
     },
-    {
-      "parameters": {
-        "jsCode": "let items=$input.all(),r=[],pn=$('Build Prompt');\nfor(let i=0;i<items.length;i++){\n let d=items[i].json,orig=pn?pn.item.json:{},raw=d.response||'',reply=String(raw).trim().substring(0,3500)||'OK';\n r.push({json:{_reply:reply,_chat_id:d._chat_id||orig._chat_id||'',_reply_to:d._reply_to||orig._reply_to}})\n}\nreturn r",
-        "mode": "runOnceForAllItems"
-      },
-      "id": "tg-w04", "name": "Parse Reply", "type": "n8n-nodes-base.code", "typeVersion": 1, "position": [1000,300]
-    },
-    {
-      "parameters": { "method": "POST", "url": "https://api.telegram.org/bot8769988931:AAGoozgz1HOboi-zUcw8EaBcMyihzztZScI/sendMessage", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ chat_id: $json._chat_id, text: $json._reply, reply_to_message_id: $json._reply_to }) }}", "options": { "timeout": 10000 } },
-      "id": "tg-w05", "name": "Send Reply", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1250,300]
-    }
+    { "parameters": { "method": "POST", "url": "https://api.telegram.org/bot8769988931:AAGoozgz1HOboi-zUcw8EaBcMyihzztZScI/sendMessage", "sendBody": true, "specifyBody": "json", "jsonBody": "={{ JSON.stringify({ chat_id: $json._chat_id, text: '✅ Got it! Processing...', reply_to_message_id: $json._reply_to }) }}", "options": { "timeout": 10000 } }, "id": "t8", "name": "Ack", "type": "n8n-nodes-base.httpRequest", "typeVersion": 4, "position": [1150,500] }
   ],
   "connections": {
-    "Webhook": {"main":[[{"node":"Build Prompt","type":"main","index":0}]]},
-    "Build Prompt": {"main":[[{"node":"Skip Empty","type":"main","index":0}]]},
+    "Webhook": {"main":[[{"node":"Parse Message","type":"main","index":0}]]},
+    "Parse Message": {"main":[[{"node":"Route","type":"main","index":0}]]},
+    "Route": {"main":[[{"node":"Call Email Send","type":"main","index":0}],[{"node":"Skip Empty","type":"main","index":0}]]},
     "Skip Empty": {"main":[[{"node":"Call Ollama","type":"main","index":0}]]},
     "Call Ollama": {"main":[[{"node":"Parse Reply","type":"main","index":0}]]},
-    "Parse Reply": {"main":[[{"node":"Send Reply","type":"main","index":0}]]}
+    "Parse Reply": {"main":[[{"node":"Reply TG","type":"main","index":0}]]},
+    "Call Email Send": {"main":[[{"node":"Ack","type":"main","index":0}]]}
   },
   "settings": { "timezone": "Asia/Kolkata", "saveManualExecutions": true },
-  "staticData": null, "pinData": {}, "versionId": "5.0.0"
+  "staticData": null, "pinData": {}, "versionId": "7.1.0"
 }
